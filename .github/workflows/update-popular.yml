@@ -11,7 +11,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +22,7 @@ jobs:
       - name: 정보나루에서 받기
         env:
           LIBRARY_KEY: ${{ secrets.LIBRARY_KEY }}
-        run: python scripts/fetch_popular.py
+        run: python -u scripts/fetch_popular.py
 
       - name: 바뀐 게 있으면 올리기
         run: |
