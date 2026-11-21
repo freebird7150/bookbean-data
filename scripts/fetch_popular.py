@@ -3,7 +3,7 @@
 
 도서관 정보나루 인기대출도서(loanItemSrch)를 나이(2~19살) × 기간(1·3·12개월)마다 한 번씩 받아
 popular/age{N}.json 으로 저장한다. 분야(이야기·과학 등)는 앱이 class_no 로 나눠 보여 준다.
-→ 하루 호출 54건 남짓 (책이 적은 나이는 앞뒤 한 살로 넓혀 한 번 더).
+→ 하루 호출 54건 + 분야별 90건 남짓 (책이 적은 나이는 앞뒤 한 살로 넓혀 한 번 더).
 
 받기에 실패하거나 결과가 이상하면 파일을 덮어쓰지 않고 실패로 끝난다 (어제 파일 유지).
 """
@@ -22,6 +22,9 @@ PERIODS = (1, 3, 12)          # 개월
 PAGE_SIZE = 200               # 분야별로 나눠도 충분히 남게
 KEEP = 150                    # 시리즈 중복을 뺀 뒤 기간당 남길 책 수
 MIN_BOOKS = 10                # 이보다 적으면 앞뒤 한 살까지 넓힌다
+TOPIC_PERIOD = 3              # 이 기간은 분야별로도 따로 받는다 (문학 외 분야가 전체 목록에선 너무 적어서)
+TOPICS = ("4", "3", "6", "9", "5")   # KDC: 자연과학·사회과학·예술·역사·기술과학(건강·생활)
+TOPIC_KEEP = 40
 OUT = "popular"
 
 
@@ -66,11 +69,14 @@ def series_key(title: str) -> str:
     return re.sub(r"\s+", "", t)
 
 
-def fetch(start: date, end: date, from_age: int, to_age: int) -> list:
-    q = urllib.parse.urlencode({
+def fetch(start: date, end: date, from_age: int, to_age: int, kdc: str = "", keep: int = KEEP) -> list:
+    params = {
         "authKey": KEY, "startDt": start.isoformat(), "endDt": end.isoformat(),
-        "from_age": from_age, "to_age": to_age, "pageSize": PAGE_SIZE, "format": "json",
-    })
+        "from_age": from_age, "to_age": to_age, "pageSize": PAGE_SIZE if not kdc else 80, "format": "json",
+    }
+    if kdc:
+        params["kdc"] = kdc
+    q = urllib.parse.urlencode(params)
     body = get(f"https://data4library.kr/api/loanItemSrch?{q}")
     res = body.get("response") or {}
     if "error" in res:
@@ -90,7 +96,7 @@ def fetch(start: date, end: date, from_age: int, to_age: int) -> list:
             "n": int(str(b.get("loan_count") or "0").replace(",", "") or 0),
             "k": (b.get("class_no") or "").strip()[:1],   # KDC 대분류 숫자 (분야 나누기용)
         })
-        if len(books) >= KEEP:
+        if len(books) >= keep:
             break
     return books
 
@@ -130,6 +136,17 @@ def main() -> int:
                 widened = True
             with_class += sum(1 for b in books if b["k"])
             periods[str(m)] = {"widened": widened, "books": books}
+            if m == TOPIC_PERIOD:
+                by_topic = {}
+                for k in TOPICS:
+                    lo, hi = (max(age - 1, 0), age + 1) if widened else (age, age)
+                    try:
+                        by_topic[k] = fetch(start, end, lo, hi, kdc=k, keep=TOPIC_KEEP); calls += 1
+                    except Exception as e:  # 분야 하나 실패해도 전체는 계속
+                        print(f"  {age}살 분야 {k} 실패: {e}", flush=True)
+                    time.sleep(1)
+                periods[str(m)]["byTopic"] = by_topic
+                print(f"  분야별: " + ", ".join(f"{k}={len(v)}" for k, v in by_topic.items()), flush=True)
             print(f"{age}살 {m}개월: {len(books)}권{' (앞뒤 한 살 포함)' if widened else ''}", flush=True)
             time.sleep(1)
         results[age] = periods
