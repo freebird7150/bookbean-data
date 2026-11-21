@@ -1,9 +1,9 @@
 """
 책콩 앱용 '또래 인기 도서' 데이터 만들기 (매일 새벽 GitHub Actions 에서 실행)
 
-도서관 정보나루 인기대출도서(loanItemSrch)를 나이(2~13살) × 기간(1·3·12개월)마다 한 번씩 받아
+도서관 정보나루 인기대출도서(loanItemSrch)를 나이(2~19살) × 기간(1·3·12개월)마다 한 번씩 받아
 popular/age{N}.json 으로 저장한다. 분야(이야기·과학 등)는 앱이 class_no 로 나눠 보여 준다.
-→ 하루 호출 36건 남짓 (책이 적은 나이는 앞뒤 한 살로 넓혀 한 번 더).
+→ 하루 호출 54건 남짓 (책이 적은 나이는 앞뒤 한 살로 넓혀 한 번 더).
 
 받기에 실패하거나 결과가 이상하면 파일을 덮어쓰지 않고 실패로 끝난다 (어제 파일 유지).
 """
@@ -17,7 +17,7 @@ import urllib.request
 from datetime import date, timedelta
 
 KEY = os.environ.get("LIBRARY_KEY", "").strip()
-AGES = range(2, 14)
+AGES = range(2, 20)
 PERIODS = (1, 3, 12)          # 개월
 PAGE_SIZE = 200               # 분야별로 나눠도 충분히 남게
 KEEP = 150                    # 시리즈 중복을 뺀 뒤 기간당 남길 책 수
@@ -34,16 +34,20 @@ def months_ago(d: date, months: int) -> date:
     return date(y, m, day)
 
 
-def get(url: str) -> dict:
+def get(url: str, timeout: int = 60, tries: int = 2) -> dict:
     last = None
-    for attempt in range(3):
+    for attempt in range(tries):
+        t0 = time.time()
         try:
-            with urllib.request.urlopen(url, timeout=90) as r:
-                return json.loads(r.read().decode("utf-8"))
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                body = json.loads(r.read().decode("utf-8"))
+            print(f"  응답 {time.time() - t0:.1f}초", flush=True)
+            return body
         except Exception as e:  # 느린 서버: 잠깐 쉬고 다시
             last = e
-            time.sleep(5 * (attempt + 1))
-    raise RuntimeError(f"요청 실패: {url.split('authKey')[0]}… ({last})")
+            print(f"  실패 {time.time() - t0:.1f}초: {type(e).__name__} {e}", flush=True)
+            time.sleep(5)
+    raise RuntimeError(f"요청 실패 ({last})")
 
 
 def clean_author(raw: str) -> str:
@@ -97,6 +101,21 @@ def main() -> int:
         return 1
     today = date.today()
     end = today - timedelta(days=1)
+    # 먼저 작은 요청 하나로 연결을 확인한다 (막혀 있으면 오래 끌지 않고 바로 실패)
+    print("연결 확인…", flush=True)
+    probe = urllib.parse.urlencode({"authKey": KEY, "startDt": months_ago(end, 1).isoformat(),
+                                    "endDt": end.isoformat(), "from_age": 6, "to_age": 6,
+                                    "pageSize": 3, "format": "json"})
+    try:
+        res = get(f"https://data4library.kr/api/loanItemSrch?{probe}", timeout=60, tries=1).get("response") or {}
+    except Exception as e:
+        print(f"정보나루에 연결하지 못했습니다: {e}")
+        return 1
+    if "error" in res:
+        print(f"정보나루 오류: {res.get('errCode')} {res.get('error')}")
+        return 1
+    sample = [(d.get('doc') or {}) for d in res.get('docs') or []]
+    print("샘플:", [(b.get('bookname'), b.get('class_no')) for b in sample], flush=True)
     os.makedirs(OUT, exist_ok=True)
     calls, written, with_class = 0, 0, 0
     results = {}
@@ -111,7 +130,7 @@ def main() -> int:
                 widened = True
             with_class += sum(1 for b in books if b["k"])
             periods[str(m)] = {"widened": widened, "books": books}
-            print(f"{age}살 {m}개월: {len(books)}권{' (앞뒤 한 살 포함)' if widened else ''}")
+            print(f"{age}살 {m}개월: {len(books)}권{' (앞뒤 한 살 포함)' if widened else ''}", flush=True)
             time.sleep(1)
         results[age] = periods
 
