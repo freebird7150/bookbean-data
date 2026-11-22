@@ -3,7 +3,8 @@
 
 도서관 정보나루 인기대출도서(loanItemSrch)를 나이(2~19살) × 기간(1·3·12개월)마다 한 번씩 받아
 popular/age{N}.json 으로 저장한다. 분야(이야기·과학 등)는 앱이 class_no 로 나눠 보여 준다.
-→ 하루 호출 54건 + 분야별 90건 남짓 (책이 적은 나이는 앞뒤 한 살로 넓혀 한 번 더).
+부모님 추천용으로 30~49세 인기 도서(전체)와 육아책(KDC 598·379 등)을 popular/parent.json 에 따로 저장한다 (+3건).
+→ 하루 호출 54건 + 분야별 90건 + 부모님 3건 남짓 (책이 적은 나이는 앞뒤 한 살로 넓혀 한 번 더).
 
 받기에 실패하거나 결과가 이상하면 파일을 덮어쓰지 않고 실패로 끝난다 (어제 파일 유지).
 """
@@ -95,6 +96,7 @@ def fetch(start: date, end: date, from_age: int, to_age: int, kdc: str = "", kee
             "c": (b.get("bookImageURL") or "").strip().replace("http://", "https://"),
             "n": int(str(b.get("loan_count") or "0").replace(",", "") or 0),
             "k": (b.get("class_no") or "").strip()[:1],   # KDC 대분류 숫자 (분야 나누기용)
+            "cn": (b.get("class_no") or "").strip(),       # 전체 분류번호 (부모 육아책 고르기용, 저장 전에 지움)
         })
         if len(books) >= keep:
             break
@@ -158,6 +160,10 @@ def main() -> int:
         print("받은 책이 너무 적어 저장하지 않습니다 (어제 파일 유지).")
         return 1
 
+    for periods in results.values():
+        for p in periods.values():
+            for b in p["books"] + [x for v in p.get("byTopic", {}).values() for x in v]:
+                b.pop("cn", None)
     for age, periods in results.items():
         doc = {"updated": today.isoformat(), "age": age, "source": "도서관 정보나루", "periods": periods}
         with open(f"{OUT}/age{age}.json", "w", encoding="utf-8") as f:
@@ -166,7 +172,40 @@ def main() -> int:
     with open(f"{OUT}/index.json", "w", encoding="utf-8") as f:
         json.dump({"updated": today.isoformat(), "ages": list(AGES), "periods": list(PERIODS)}, f)
     print(f"파일 {written}개 저장")
+    save_parent(today, end)
     return 0
+
+
+PARENT_AGES = (30, 49)
+PARENTING = ("598", "379", "599")   # 육아 / 가정교육·유아교육 / 아동
+
+
+def save_parent(today: date, end: date) -> None:
+    """부모님 추천: 30~49세 인기 도서 + 육아책. 실패해도 아이 파일은 이미 저장됐으니 넘어간다."""
+    start = months_ago(end, 3)
+    try:
+        lo, hi = PARENT_AGES
+        adult = [b for b in fetch(start, end, lo, hi, keep=80) if not b["cn"].startswith(PARENTING)]
+        parenting = []
+        for kdc in ("5", "3"):              # 기술과학(598 육아), 사회과학(379 가정교육)
+            for b in fetch(start, end, lo, hi, kdc=kdc, keep=200):
+                if b["cn"].startswith(PARENTING) and b["t"] not in {x["t"] for x in parenting}:
+                    parenting.append(b)
+            time.sleep(1)
+        parenting.sort(key=lambda b: -b["n"])
+        for b in adult + parenting:
+            b.pop("cn", None)
+        print(f"부모님: 인기 {len(adult)}권, 육아 {len(parenting)}권", flush=True)
+        if len(adult) < 5:
+            print("부모님 인기 도서가 너무 적어 저장하지 않습니다.")
+            return
+        doc = {"updated": today.isoformat(), "ages": list(PARENT_AGES), "source": "도서관 정보나루",
+               "adult": adult[:40], "parenting": parenting[:40]}
+        with open(f"{OUT}/parent.json", "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, separators=(",", ":"))
+        print("parent.json 저장")
+    except Exception as e:
+        print(f"부모님 추천 받기 실패 (아이 파일은 그대로): {e}", flush=True)
 
 
 if __name__ == "__main__":
