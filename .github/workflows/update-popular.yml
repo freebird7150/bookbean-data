@@ -33,5 +33,6 @@ jobs:
             echo "바뀐 내용 없음"
           else
             git commit -m "또래 인기 도서 갱신 $(date -u +%F)"
+            git pull --rebase origin main
             git push
           fi
