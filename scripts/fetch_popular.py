@@ -38,7 +38,7 @@ def months_ago(d: date, months: int) -> date:
     return date(y, m, day)
 
 
-def get(url: str, timeout: int = 60, tries: int = 2) -> dict:
+def get(url: str, timeout: int = 60, tries: int = 3) -> dict:
     last = None
     for attempt in range(tries):
         t0 = time.time()
@@ -126,39 +126,46 @@ def main() -> int:
     print("샘플:", [(b.get('bookname'), b.get('class_no')) for b in sample], flush=True)
     os.makedirs(OUT, exist_ok=True)
     calls, written, with_class = 0, 0, 0
-    results = {}
+    # 부모님 추천은 호출이 적으니 먼저 (아이 파일 받다가 시간이 다 가도 이건 남게)
+    parent_ok = save_parent(today, end)
+    results, skipped = {}, []
     for age in AGES:
         periods = {}
-        for m in PERIODS:
-            start = months_ago(end, m)
-            books = fetch(start, end, age, age); calls += 1
-            widened = False
-            if len(books) < MIN_BOOKS:
-                books = fetch(start, end, max(age - 1, 0), age + 1); calls += 1
-                widened = True
-            with_class += sum(1 for b in books if b["k"])
-            periods[str(m)] = {"widened": widened, "books": books}
-            if m == TOPIC_PERIOD:
-                by_topic = {}
-                for k in TOPICS:
-                    lo, hi = (max(age - 1, 0), age + 1) if widened else (age, age)
-                    try:
-                        by_topic[k] = fetch(start, end, lo, hi, kdc=k, keep=TOPIC_KEEP); calls += 1
-                    except Exception as e:  # 분야 하나 실패해도 전체는 계속
-                        print(f"  {age}살 분야 {k} 실패: {e}", flush=True)
-                    time.sleep(1)
-                periods[str(m)]["byTopic"] = by_topic
-                print(f"  분야별: " + ", ".join(f"{k}={len(v)}" for k, v in by_topic.items()), flush=True)
-            print(f"{age}살 {m}개월: {len(books)}권{' (앞뒤 한 살 포함)' if widened else ''}", flush=True)
-            time.sleep(1)
+        try:
+          for m in PERIODS:
+              start = months_ago(end, m)
+              books = fetch(start, end, age, age); calls += 1
+              widened = False
+              if len(books) < MIN_BOOKS:
+                  books = fetch(start, end, max(age - 1, 0), age + 1); calls += 1
+                  widened = True
+              with_class += sum(1 for b in books if b["k"])
+              periods[str(m)] = {"widened": widened, "books": books}
+              if m == TOPIC_PERIOD:
+                  by_topic = {}
+                  for k in TOPICS:
+                      lo, hi = (max(age - 1, 0), age + 1) if widened else (age, age)
+                      try:
+                          by_topic[k] = fetch(start, end, lo, hi, kdc=k, keep=TOPIC_KEEP); calls += 1
+                      except Exception as e:  # 분야 하나 실패해도 전체는 계속
+                          print(f"  {age}살 분야 {k} 실패: {e}", flush=True)
+                      time.sleep(1)
+                  periods[str(m)]["byTopic"] = by_topic
+                  print(f"  분야별: " + ", ".join(f"{k}={len(v)}" for k, v in by_topic.items()), flush=True)
+              print(f"{age}살 {m}개월: {len(books)}권{' (앞뒤 한 살 포함)' if widened else ''}", flush=True)
+              time.sleep(1)
+        except Exception as e:  # 한 나이가 끝내 실패하면 그 나이는 어제 파일을 그대로 둔다
+            print(f"{age}살 실패, 건너뜀 (어제 파일 유지): {e}", flush=True)
+            skipped.append(age)
+            continue
         results[age] = periods
 
     total = sum(len(p["books"]) for ps in results.values() for p in ps.values())
     print(f"호출 {calls}건, 책 {total}권, 분류번호 있는 책 {with_class}권")
     # 이상한 결과면 덮어쓰지 않는다
-    if total < len(AGES) * len(PERIODS) * 5:
+    if not results or total < len(results) * len(PERIODS) * 5:
         print("받은 책이 너무 적어 저장하지 않습니다 (어제 파일 유지).")
-        return 1
+        return 0 if parent_ok else 1   # 부모님 파일이라도 새로 받았으면 올리게
 
     for periods in results.values():
         for p in periods.values():
@@ -171,8 +178,7 @@ def main() -> int:
         written += 1
     with open(f"{OUT}/index.json", "w", encoding="utf-8") as f:
         json.dump({"updated": today.isoformat(), "ages": list(AGES), "periods": list(PERIODS)}, f)
-    print(f"파일 {written}개 저장")
-    save_parent(today, end)
+    print(f"파일 {written}개 저장" + (f", 실패해서 건너뛴 나이 {skipped}" if skipped else ""))
     return 0
 
 
@@ -180,7 +186,7 @@ PARENT_AGES = (30, 49)
 PARENTING = ("598", "379", "599")   # 육아 / 가정교육·유아교육 / 아동
 
 
-def save_parent(today: date, end: date) -> None:
+def save_parent(today: date, end: date) -> bool:
     """부모님 추천: 30~49세 인기 도서 + 육아책. 실패해도 아이 파일은 이미 저장됐으니 넘어간다."""
     start = months_ago(end, 3)
     try:
@@ -198,14 +204,16 @@ def save_parent(today: date, end: date) -> None:
         print(f"부모님: 인기 {len(adult)}권, 육아 {len(parenting)}권", flush=True)
         if len(adult) < 5:
             print("부모님 인기 도서가 너무 적어 저장하지 않습니다.")
-            return
+            return False
         doc = {"updated": today.isoformat(), "ages": list(PARENT_AGES), "source": "도서관 정보나루",
                "adult": adult[:40], "parenting": parenting[:40]}
         with open(f"{OUT}/parent.json", "w", encoding="utf-8") as f:
             json.dump(doc, f, ensure_ascii=False, separators=(",", ":"))
         print("parent.json 저장")
+        return True
     except Exception as e:
         print(f"부모님 추천 받기 실패 (아이 파일은 그대로): {e}", flush=True)
+        return False
 
 
 if __name__ == "__main__":
